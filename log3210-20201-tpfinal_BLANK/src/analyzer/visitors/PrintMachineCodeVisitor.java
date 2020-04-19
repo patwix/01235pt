@@ -116,14 +116,12 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         String right = (String) node.jjtGetChild(2).jjtAccept(this, null);
         LDIfNotInMemory(right); // check if variable is loaded and add it if not
 
-        String op = node.getOp();
-
         // TODO: Modify CODE to add the needed MachLine.
         //       here the type of Assignment is "assigned = left op right" and you should put pointers in the MachLine at
         //       the moment (ex: "@a")
 
         ArrayList<String> line = new ArrayList<>();
-        line.add(op);
+        line.add(OP.get(node.getOp()));
         line.add(assigned);
         line.add(left);
         line.add(right);
@@ -362,8 +360,17 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
             // NEXT_OLD_IN = NEXT_IN[node]
             //  *** WARNING BE CAREFULL WITH HASHMAP.CLONE()' IT IS SHALLOW COPYING ***
-            HashMap<String, ArrayList<Integer>> nextOldIn = new HashMap<>();
-            line.Next_IN.nextuse.forEach(nextOldIn::put);
+//            HashMap<String, ArrayList<Integer>> nextOldIn = (HashMap) line.Next_IN.nextuse.clone();
+
+
+//            line.Next_IN.nextuse.forEach((k,v) -> {
+//
+//                nextOldIn.put(k,v);
+//                if (lineNumber.equals(2)) {
+//                    nextOldIn.get("a").add(666);
+//                }
+//
+//            });
 
             // for v, n ou v est une variable de NEXT_OUT et n sont les numéros de ligne associés à cette variable
             line.Next_OUT.nextuse.forEach((v, n) -> { //for ((v, n) in NEXT_OUT[node])
@@ -378,12 +385,14 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
                     if (line.Next_IN.nextuse.containsKey(var)) {
                         line.Next_IN.nextuse.get(var).add(lineNumber);
                     } else {
-                        line.Next_IN.nextuse.put(var, new ArrayList<Integer>() {{add(lineNumber);}});
+                        ArrayList<Integer> in = new ArrayList<>();
+                        in.add(lineNumber);
+                        line.Next_IN.nextuse.put(var, in);
                     }
                 });
             }
 
-            if (!line.Next_IN.equals(nextOldIn)) { // if (NEXT_IN[node] != NEXT_OLD IN)
+            if (!line.Next_IN.nextuse.isEmpty()) { // if (NEXT_IN[node] != NEXT_OLD IN)
                 line.PRED.forEach(pred -> workList.push(CODE.get(lineNumber -1))); // for (predNode in predecessors (node)) workList.push(predNode);
                 currentLineNumber--;
             }
