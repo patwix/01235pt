@@ -32,7 +32,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     }
 
     private void LDIfNotInMemory(String var) {
-        if (!LOADED.contains(var)) {
+        if (!LOADED.contains(var) && RETURNED.contains(var)) {
 
             // add the variable we're loading in the LOADED list
             LOADED.add(var);
@@ -62,9 +62,9 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     @Override
     public Object visit(ASTProgram node, Object data) {
 
-        Integer numStatements = node.jjtGetChild(1).jjtGetNumChildren();
-        // Visiter les enfants
-        node.childrenAccept(this, null);
+        node.jjtGetChild(0).jjtAccept(this, data);
+        node.jjtGetChild(2).jjtAccept(this, data);
+        node.jjtGetChild(1).jjtAccept(this, data);
 
         compute_LifeVar(); // first Life variables computation (should be recalled when machine code generation)
         compute_NextUse(); // first Next-Use computation (should be recalled when machine code generation)
@@ -89,7 +89,6 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
             // TODO: the returned variables should be added to the Life_OUT set of the last statement of the basic block (before the "ST" expressions in the machine code)
         }
-
         return null;
     }
 
@@ -289,8 +288,19 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
     private void compute_LifeVar() {
         // TODO: Implement LifeVariable algorithm on the CODE array (for machine code)
-        Stack workList = new Stack();
-        workList.push(CODE.get(CODE.size() - 1));
+        // TODO: the returned variables should be added to the Life_OUT set of the last statement of the basic block (before the "ST" expressions in the machine code)
+
+        Stack<MachLine> workList = new Stack<>();
+
+        // Get last statement
+        // TODO fix me when we add ST instructions
+        MachLine lastLine = CODE.get(CODE.size() - 1);
+
+        // Add the returned values to Life_out of the last statement
+        lastLine.Life_OUT.addAll(RETURNED);
+
+        workList.push(lastLine);
+
 
         while (!workList.empty()) {
             // node == worklist.pop
