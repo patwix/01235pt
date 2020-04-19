@@ -1,11 +1,7 @@
 package analyzer.visitors;
 
 import analyzer.ast.*;
-//import com.sun.javafx.geom.Edge;
-import com.sun.org.apache.bcel.internal.generic.RET;
-import com.sun.org.apache.xpath.internal.operations.Bool;
 
-import javax.crypto.Mac;
 import java.io.PrintWriter;
 import java.util.*;
 
@@ -19,6 +15,8 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     private ArrayList<String> LOADED = new ArrayList<>(); // could be use to keep which variable/pointer are loaded/ defined while going through the intermediate code
     private ArrayList<String> MODIFIED = new ArrayList<>(); // could be use to keep which variable/pointer are modified while going through the intermediate code
 
+    private InterferenceGraph G;
+
     private HashMap<String, String> OP; // map to get the operation name from it's value
 
     public PrintMachineCodeVisitor(PrintWriter writer) {
@@ -31,7 +29,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         OP.put("/", "DIV");
     }
 
-    private void LDIfNotInMemory(String var) {
+    private void ifVariableIsNotInMemoryLD(String var) {
         if (!LOADED.contains(var) && RETURNED.contains(var)) {
 
             // add the variable we're loading in the LOADED list
@@ -50,7 +48,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         }
     }
 
-    private void STifChanged() {
+    private void ifVariableValueModifiedST() {
         MODIFIED.forEach(v -> {
             ArrayList<String> line = new ArrayList<>();
             line.add("ST");
@@ -75,7 +73,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
         compute_LifeVar(); // first Life variables computation (should be recalled when machine code generation)
         compute_NextUse(); // first Next-Use computation (should be recalled when machine code generation)
-        generateGraph();
+        generateGraph(); // init G and add edges to G
         compute_machineCode(); // generate the machine code from the CODE array (the CODE array should be transformed
 
         for (int i = 0; i < CODE.size(); i++) // print the output
@@ -123,10 +121,10 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
         String left = (String) node.jjtGetChild(1).jjtAccept(this, null);
         updateModifiedArray(assigned); // add to modified if necessary
-        LDIfNotInMemory(left); // check if variable is loaded and add it if not
+        ifVariableIsNotInMemoryLD(left); // check if variable is loaded and add it if not
 
         String right = (String) node.jjtGetChild(2).jjtAccept(this, null);
-        LDIfNotInMemory(right); // check if variable is loaded and add it if not
+        ifVariableIsNotInMemoryLD(right); // check if variable is loaded and add it if not
 
         ArrayList<String> line = new ArrayList<>();
         line.add(OP.get(node.getOp()));
@@ -147,7 +145,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         updateModifiedArray(assigned); // add to modified if necessary
 
         String left = (String) node.jjtGetChild(1).jjtAccept(this, null);
-        LDIfNotInMemory(left); // check if variable is loaded and add it if not
+        ifVariableIsNotInMemoryLD(left); // check if variable is loaded and add it if not
 
         ArrayList<String> line = new ArrayList<>();
         line.add("SUB");
@@ -169,7 +167,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         updateModifiedArray(assigned); // add to modified if necessary
 
         String left = (String) node.jjtGetChild(1).jjtAccept(this, null);
-        LDIfNotInMemory(left); // check if variable is loaded and add it if not
+        ifVariableIsNotInMemoryLD(left); // check if variable is loaded and add it if not
 
         ArrayList<String> line = new ArrayList<>();
         line.add("ADD");
@@ -285,12 +283,60 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         }
     }
 
+    // Constructeur du graphe. Initialise la matrice d'ajacence avec des 0 partout
+    private class InterferenceGraph {
+
+        private HashMap<String, HashMap<String, Boolean>> adjacencyMatrix = new HashMap<>();
+
+        public InterferenceGraph(ArrayList<String> variables) {
+
+            for (String v : variables) {
+                HashMap<String, Boolean> initialAdjacentsMap = new HashMap<>();
+                variables.forEach(banana -> {
+                    initialAdjacentsMap.put(banana, false);
+                });
+                adjacencyMatrix.put(v, initialAdjacentsMap);
+            }
+        }
+
+        // Ajouter une arête entre les noeuds de variables node1 et node2
+        public void addEdge(String node1, String node2) {
+            this.adjacencyMatrix.get(node1).replace(node2, true);
+            this.adjacencyMatrix.get(node2).replace(node1, true);
+        }
+
+        // Retire une arête entre les noeuds de variables node1 et node2
+        public void removeEdge(String node1, String node2) {
+            this.adjacencyMatrix.get(node1).replace(node2, false);
+            this.adjacencyMatrix.get(node2).replace(node1, false);
+        }
+
+        public ArrayList<String> getNodeNeighbours(String node) {
+            ArrayList<String> neighbours = new ArrayList<>();
+            adjacencyMatrix.get(node).forEach((v, b) -> {
+                if (b) {
+                    neighbours.add(v);
+                }
+            });
+            return neighbours;
+        }
+
+        public Integer getAmountOfNeighboursForVertice(String vertex) {
+            Integer counter = 0;
+            for (Boolean v : this.adjacencyMatrix.get(vertex).values()) {
+                if (v) counter++;
+            }
+            return counter;
+        }
+    }
+
+
     private void compute_LifeVar() {
 
         Stack<MachLine> workList = new Stack<>();
 
         if (!MODIFIED.isEmpty()) {
-            STifChanged(); // Add ST instruction with my cool function
+            ifVariableValueModifiedST(); // Add ST instruction with my cool function
         }
 
         // Get last statement
@@ -429,6 +475,28 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
     private void generateGraph() {
 
+        // Find all nodes referenced in CODE MachLines.Next_OUTs
+        HashSet<String> vertices = new HashSet<>();
+        for (MachLine ml : CODE) {
+            vertices.addAll(ml.Next_OUT.nextuse.keySet());
+        }
+
+
+        // Initialise G with a zero matrix
+        G = new InterferenceGraph(new ArrayList<>(vertices));
+
+        // Use CODE Next_OUTs to generate edges
+        CODE.forEach(ml -> { // for each machline instructions in CODE
+            ArrayList<String> nextOuts = new ArrayList<>(ml.Next_OUT.nextuse.keySet()); // create iterable array
+            // Add all possible edges
+            if (nextOuts.size() > 1) { // Obviously, we need 2 or more vertices to create edges, right?
+                for (int i = 0; i < nextOuts.size() - 1; i++) {
+                    for (int j = i + 1; j < nextOuts.size(); j++) {
+                        G.addEdge(nextOuts.get(i), nextOuts.get(j));
+                    }
+                }
+            }
+        });
     }
 
     public void compute_machineCode() {
