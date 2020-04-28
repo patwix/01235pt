@@ -14,11 +14,9 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     private ArrayList<MachLine> CODE = new ArrayList<>(); // representation of the Machine Code in Machine lines (MachLine)
     private ArrayList<String> LOADED = new ArrayList<>(); // could be use to keep which variable/pointer are loaded/ defined while going through the intermediate code
     private ArrayList<String> MODIFIED = new ArrayList<>(); // could be use to keep which variable/pointer are modified while going through the intermediate code
+    private HashSet<String> SPILLED = new HashSet<>();
 
     private HashMap<String, Integer> COLORMAP = new HashMap<>();
-
-    // Knowing all our existing pointers can be usefull for graph construction
-    private ArrayList<String> POINTERS = new ArrayList<>();
 
     private InterferenceGraph G;
 
@@ -82,6 +80,9 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         node.jjtGetChild(1).jjtAccept(this, data);
 
         // Process machine code do -> lifevar -> nextuse -> generategraph
+        if (!MODIFIED.isEmpty()) {
+            ifVariableValueModifiedST(); // Add ST instruction with my cool function
+        }
         processMachineCode();
         compute_machineCode();
 
@@ -107,7 +108,6 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     @Override
     public Object visit(ASTNumberRegister node, Object data) {
         REG = ((ASTIntValue) node.jjtGetChild(0)).getValue(); // get the limitation of register
-//        REG = 3;
         return null;
     }
 
@@ -225,12 +225,12 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
     private class NextUse {
         // NextUse class implementation: you can use it or redo it your way
-        public HashMap<String, ArrayList<Integer>> nextuse = new HashMap<String, ArrayList<Integer>>();
+        HashMap<String, ArrayList<Integer>> nextuse = new HashMap<String, ArrayList<Integer>>();
 
-        public NextUse() {
+        NextUse() {
         }
 
-        public NextUse(HashMap<String, ArrayList<Integer>> nextuse) {
+        NextUse(HashMap<String, ArrayList<Integer>> nextuse) {
             this.nextuse = nextuse;
         }
 
@@ -277,16 +277,26 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
             // PRED, SUCC, REF, DEF already computed (cadeau)
 
-            // This is soooo fucking wrong, what if i'm inserting a ST line ? I lost a couple hours trying to debug only
+            // This is soooo fu***ng wrong, what if i'm inserting a ST line not at the end? I lost a couple hours trying to debug only
             // to find out that the problem was in provided code. WTF ! This is a poisoned gift .....
             if (size > 0) {
                 PRED.add(size - 1);
                 CODE.get(size - 1).SUCC.add(size);
             }
-            this.DEF.add(s.get(1));
-            for (int i = 2; i < s.size(); i++)
-                if (s.get(i).charAt(0) == '@')
-                    this.REF.add(s.get(i));
+
+            // DAAMMMMIT i also lost a lot of time here to... ST and LD lines, ref / def ?
+            if (OP.values().contains(s.get(0))) {
+                this.DEF.add(s.get(1));
+                for (int i = 2; i < s.size(); i++)
+                    if (s.get(i).charAt(0) == '@')
+                        this.REF.add(s.get(i));
+            } else if (s.get(0).equals("LD")) {
+                this.DEF.clear();
+                this.DEF.add(s.get(1));
+            } else {
+                this.REF.clear();
+                this.REF.add(s.get(2));
+            }
         }
 
         // Better Machline constructor
@@ -297,9 +307,18 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
                 CODE.get(insertionIndex - 1).SUCC.add(insertionIndex);
             }
             this.DEF.add(s.get(1));
-            for (int i = 2; i < s.size(); i++)
-                if (s.get(i).charAt(0) == '@')
-                    this.REF.add(s.get(i));
+            if (OP.values().contains(s.get(0))) {
+                this.DEF.add(s.get(1));
+                for (int i = 2; i < s.size(); i++)
+                    if (s.get(i).charAt(0) == '@')
+                        this.REF.add(s.get(i));
+            } else if (s.get(0).equals("LD")) {
+                this.DEF.clear();
+                this.DEF.add(s.get(1));
+            } else {
+                this.REF.clear();
+                this.REF.add(s.get(2));
+            }
         }
 
         public String toString() {
@@ -311,8 +330,8 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
                 buff.append(", ").append(line.get(i));
             buff.append("\n");
             // you can uncomment the others set if you want to see them.
-//            buff += "// REF      : " + REF.toString() + "\n";
-//            buff += "// DEF      : " + DEF.toString() + "\n";
+//            buff.append("// REF      : ").append(REF.toString()).append("\n");
+//            buff.append("// DEF      : ").append(DEF.toString()).append("\n");
 //            buff += "// PRED     : " + PRED.toString() + "\n";
 //            buff += "// SUCC     : " + SUCC.toString() + "\n";
             buff.append("// Life_IN  : ").append(set_ordered(Life_IN).toString()).append("\n");
@@ -321,16 +340,41 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
             buff.append("// Next_OUT : ").append(Next_OUT.toString()).append("\n");
             return buff.toString();
         }
-    }
 
+        void appendExclamationToNodeInLine(String node) {
+            String op = line.get(0);
+            for (int i = 1; i < line.size(); i++) {
+                if (line.get(i).equals(node)) {
+                    if (OP.values().contains(op)) {
+                        line.set(i, node + "!");
+                        if (i == 1) {
+                            this.DEF.remove(node);
+                            this.DEF.add(node + "!");
+                        } else {
+                            this.REF.remove(node);
+                            this.REF.add(node + "!");
+                        }
+                    } else {
+                        this.REF.clear();
+                        this.DEF.clear();
+                    }
+                    if (op.equals("LD") && (i == 1)) {
+                        line.set(i, node + "!");
+                        this.DEF.add(node + "!");
+                    } else if (op.equals("ST") && (i == 2)) {
+                        line.set(i, node + "!");
+                        this.REF.add(node + "!");
+                    }
+                }
+            }
+        }
+    }
 
     // Vertex inner class
     private class Vertex {
 
         private String variableName;
         private HashMap<String, Boolean> adjencyArray;
-        private String registerOwned = null;
-        public Boolean spilled = false;
 
         Vertex(ArrayList<String> variables, String name) {
             adjencyArray = new HashMap<>();
@@ -342,23 +386,15 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
             });
         }
 
-        String getRegisterOwned() {
-            return registerOwned;
-        }
-
         // Returns a set containing all registers used by neighbours
         HashSet<String> getRegistersUsedByNeighbours(InterferenceGraph g) {
             HashSet<String> usedRegisters = new HashSet<>();
             for(String nb: getAllNeighbours()) {
-                if (g.getAdjacencyMatrix().get(nb).getRegisterOwned() != null) {
-                    usedRegisters.add(g.getVertex(nb).getRegisterOwned());
+                if (COLORMAP.containsKey(nb)) {
+                    usedRegisters.add(generateRegisterName(COLORMAP.get(nb)));
                 }
             }
             return usedRegisters;
-        }
-
-        void setRegisterOwned(String registerOwned) {
-            this.registerOwned = registerOwned;
         }
 
         void addEdgeTo(String neighbourVariableName) {
@@ -394,19 +430,14 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         }
     }
 
-    // Constructeur du graphe. Initialise la matrice d'ajacence avec des 0 partout
+    // Le Constructeur du graphe. Initialise la matrice d'ajacence avec des 0 partout
     private class InterferenceGraph {
 
         private HashMap<String, Vertex> adjacencyMatrix = new HashMap<>();
-
         InterferenceGraph(ArrayList<String> variables) {
             for (String v : variables) {
                 adjacencyMatrix.put(v, new Vertex(variables, v));
             }
-        }
-
-        InterferenceGraph(InterferenceGraph ig) {
-            this.adjacencyMatrix = (HashMap<String, Vertex>) ig.getAdjacencyMatrix().clone();
         }
 
         Vertex getVertex(String vertexName) {
@@ -417,15 +448,6 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         void addEdge(String node1, String node2) {
             this.getVertex(node1).addEdgeTo(node2);
             this.getVertex(node2).addEdgeTo(node1);
-        }
-
-        // Spilling introduce a new vertex in our graph (new pointer, new node ect), it needs to be added
-        void addSpilledVertex(String vertexName) {
-            ArrayList<String> allNodes = new ArrayList<>(G.adjacencyMatrix.keySet());
-            String newNodeName = vertexName + "!";
-            allNodes.add(newNodeName);
-            Vertex spilledVertex = new Vertex(allNodes, newNodeName);
-            adjacencyMatrix.put(newNodeName, spilledVertex);
         }
 
         // Returns the name of the node with highest neighbours under REG value if it exists
@@ -503,10 +525,6 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
 
         Stack<MachLine> workList = new Stack<>();
 
-        if (!MODIFIED.isEmpty()) {
-            ifVariableValueModifiedST(); // Add ST instruction with my cool function
-        }
-
         // Get last statement
         MachLine lastLine = CODE.get(CODE.size() - 1);
 
@@ -549,8 +567,15 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     }
 
     private void compute_NextUse() {
+
         Integer currentLineNumber = CODE.size() - 1;
         Stack workList = new Stack();
+
+        for (int i = 0; i < CODE.size(); i++) {
+            CODE.get(i).Next_IN.nextuse = new HashMap<>();
+            CODE.get(i).Next_OUT.nextuse = new HashMap<>();
+        }
+
         workList.push(CODE.get(currentLineNumber));
 
         while (!workList.empty()) {
@@ -598,11 +623,10 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
                     Set<Integer> union = new HashSet<>();
                     if (!n.isEmpty()) {
                         union.addAll(n);
-                        if (line.Next_IN.nextuse.containsKey(v) && line.Next_IN.nextuse.isEmpty()) {
+                        if (line.Next_IN.nextuse.containsKey(v)) {
                             union.addAll(line.Next_IN.nextuse.get(v));
                         }
                     }
-
                     ArrayList<Integer> sortedArray = new ArrayList<>(union);
                     sortedArray.sort(null);
                     // add the result array in NEXT_OUT[node]
@@ -613,7 +637,7 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
             if (!line.REF.isEmpty()) {
                 line.REF.forEach(var -> { // for (v in REF[node])
                     //NEXT_IN[node] = NEXT_IN [node] union {(v, current_line_number )}
-                    if (line.Next_IN.nextuse.containsKey(var)) {
+                    if (line.Next_IN.nextuse.containsKey(var) && !line.Next_IN.nextuse.get(var).contains(lineNumber)) {
                         line.Next_IN.nextuse.get(var).add(lineNumber);
                         line.Next_IN.nextuse.get(var).sort(null);
                     } else {
@@ -656,43 +680,31 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         });
     }
 
-    // Function for debugging
-    private void printGraphInfos() {
-        System.out.println("Usefull info for graph G \n\n");
-
-        for (String v: set_ordered(G.getAdjacencyMatrix().keySet())) {
-            System.out.println("**** Node " + v + "  ****" +
-                    "  Neighbours: " + G.getAdjacencyMatrix().get(v).getAllNeighbours().toString() +
-                    "  (count = " + G.getAdjacencyMatrix().get(v).getAmountOfNeighbours() + ")"
-            );
-        }
-    }
-
     private void compute_machineCode() {
 
         // The stack we use for coloration
         Stack<Vertex> nodeStack = new Stack<>();
 
         // We copy G into a new graph object for processing
-        InterferenceGraph G_COPY = new InterferenceGraph(G);
 
         // boucle while(!G.not empty)
-        while (G_COPY.adjacencyMatrix.size() > 0) {
+        while (G.adjacencyMatrix.size() > 0) {
 
             // current node in iteration
-            Vertex node = null;
-
-            if (!G_COPY.getNodeWithHighestNeigboursAmountUnderREG().equals("none")) {
-                String selectedNode = G_COPY.getNodeWithHighestNeigboursAmountUnderREG();
-                node = G_COPY.removeNodeFromGraph(selectedNode);
+            Vertex node;
+            if (!G.getNodeWithHighestNeigboursAmountUnderREG().equals("none")) {
+                String selectedNode = G.getNodeWithHighestNeigboursAmountUnderREG();
+                node = G.removeNodeFromGraph(selectedNode);
             } else {
                 // do spill
-                String selectedNode = G_COPY.getNodeWithHighestNeigboursAmount();
-                if (!G_COPY.getVertex(selectedNode).spilled) {
-                    do_Spill(G_COPY.removeNodeFromGraph(selectedNode), G_COPY);
+                String selectedNode = G.getNodeWithHighestNeigboursAmount();
+                node = G.removeNodeFromGraph(selectedNode);
+                if (!SPILLED.contains(selectedNode)) {
+
+                    do_Spill(node);
+                    processMachineCode();
+                    compute_machineCode();
                     return;
-                } else {
-                    node = G_COPY.removeNodeFromGraph(selectedNode);
                 }
             }
 
@@ -705,136 +717,100 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
         while (!nodeStack.empty()) {
             Vertex popedNode = nodeStack.pop();
 
-            G_COPY.addBackNodeAndConnectPreviousEdges(popedNode);
+            G.addBackNodeAndConnectPreviousEdges(popedNode);
             Boolean registerFound = false;
 
             // Counter used to find first available register
             Integer color = 0;
 
-
             while (!registerFound) {
-                if (!popedNode.getRegistersUsedByNeighbours(G_COPY).contains(generateRegisterName(color))) {
+                if (!popedNode.getRegistersUsedByNeighbours(G).contains(generateRegisterName(color))) {
 
                     // If we find an available register, we assing it to popedNode and switch that bool to true to exit loop
                     registerFound = true;
-
                     // Otherwise we increment counter and try again
                 } else {
                     color++;
                 }
             }
-            popedNode.setRegisterOwned(generateRegisterName(color));
-            COLORMAP.put(popedNode.variableName,color);
+            COLORMAP.put(popedNode.variableName, color);
         }
-        G = G_COPY;
     }
 
-    private void do_Spill(Vertex node, InterferenceGraph G_COPY) {
+    private void do_Spill(Vertex node) {
 
         // the first line where node is used
         Integer first = null;
 
         final String nodeName = node.getNodeName();
+        SPILLED.add(nodeName);
 
+        // numero de ligne de la premiere utilisation de node dans une expression ”OP” ( pas ”ST” ni ”LD” )
         for (int i = 0; i < CODE.size(); i++) {
             MachLine ml = CODE.get(i);
+            // If a variable is at position 1 of an operation in OP before, or at, first, it is modified
             if (OP.values().contains(ml.line.get(0)) && ml.line.contains(nodeName)) {
                 first = i;
                 break;
             }
         }
 
-        MODIFIED.clear();
+        // Get node nextuses hashmap (all pointers)
+        HashMap<String, ArrayList<Integer>> lineNextUses = CODE.get(first).Next_OUT.nextuse;
+
+        Boolean isModified = false;
         for (int i = 0; i <= first; i++) {
-            if (OP.containsValue(CODE.get(i).line.get(0)) && CODE.get(i).line.get(0).equals(nodeName) && RETURNED.contains(nodeName)) {
-                MODIFIED.add(nodeName);
-            }
-
-        }
-
-        // If we modified the value for a variable in our registers, we need to update its value in RAM before we can clear it in regs.
-        if (MODIFIED.contains(nodeName)) {
-            // Node is modified
-            // Create new machline
-            ArrayList<String> newLine = new ArrayList<>(Arrays.asList(
-                    "ST", nodeName.replaceAll("@", ""), nodeName));
-            MachLine saveNode = new MachLine(newLine, first);
-
-            G.addSpilledVertex(nodeName);
-
-            // Save data in memory
-            CODE.add(first + 1, saveNode);
-            fixBrokenPRED_SUCC();
-
-            if (CODE.get(first).Next_OUT.nextuse.get(nodeName).size() == 1 && RETURNED.contains(nodeName.replaceAll("!", ""))) {
-                // Selon les directives énigmatiques du tp, dans ce cas précis nous devons retourner à l'étape 4 =_=
-                for (int i = CODE.get(first).Next_OUT.nextuse.get(nodeName).get(0); i < CODE.size() -1; i++) {
-
-                    if (CODE.get(i).Next_OUT.nextuse.keySet().contains(nodeName)) {
-                        ArrayList<Integer> values = (CODE.get(i).Next_OUT.nextuse.get(nodeName));
-                        values.sort(null);
-                        CODE.get(i).Next_OUT.nextuse.remove(nodeName);
-                        CODE.get(i).Next_OUT.nextuse.put(nodeName + "!", values);
-                    }
-
-                    if (CODE.get(i).Next_IN.nextuse.keySet().contains(nodeName)) {
-                        ArrayList<Integer> values = (CODE.get(i).Next_IN.nextuse.get(nodeName));
-                        values.sort(null);
-                        CODE.get(i).Next_IN.nextuse.remove(nodeName);
-                        CODE.get(i).Next_IN.nextuse.put(nodeName + "!", values);
-                    }
-                }
-                processMachineCode();
-                compute_machineCode();
+            if (OP.containsValue(CODE.get(i).line.get(0)) && CODE.get(i).line.get(0).equals(nodeName)) {
+                isModified = true;
             }
         }
 
-        MachLine spilledMachineLine = CODE.get(first);
-        if (!CODE.get(first).Next_OUT.nextuse.get(nodeName).isEmpty()) {
+        // Si node est modifiée, est dans returned et n'est pas réutilisée
+        if (isModified && RETURNED.contains(nodeName) && lineNextUses.get(nodeName).isEmpty()) {
+            // Node is modified -> Create new ST machline
+            CODE.add(first + 1, new MachLine(new ArrayList<>(Arrays.asList(
+                    "ST", nodeName.replaceAll("@", ""), nodeName)), first));
+            fixBrokenPRED_SUCC();
+        }
 
-            ArrayList<String> ldLine = new ArrayList<>(Arrays.asList(
-            "LD", nodeName + "!", nodeName.replaceAll("@", "")));
-            Integer nextUse = spilledMachineLine.Next_OUT.nextuse.get(nodeName).get(0);
-            G.getVertex(nodeName).spilled = true;
-            CODE.add(nextUse, new MachLine(ldLine, nextUse));
+        // si node est réutilisée
+        if (lineNextUses.containsKey(nodeName) && !lineNextUses.get(nodeName).isEmpty()) {
+
+            if (isModified) {
+                // Node is modified -> Create new ST machline
+                CODE.add(first + 1, new MachLine(new ArrayList<>(Arrays.asList(
+                        "ST", nodeName.replaceAll("@", ""), nodeName)), first));
+                fixBrokenPRED_SUCC();
+            }
+
+            // prochaines utilisations du node
+            ArrayList<Integer> nodeNextUsesAtLineFirst = lineNextUses.get(nodeName);
+
+            // On recharge la node dans un nouveau node avant le prochain lieu de reutilisation
+            Integer nextUse = lineNextUses.get(nodeName).get(0);
+            CODE.add(nodeNextUsesAtLineFirst.get(0), new MachLine(new ArrayList<>(Arrays.asList(
+                    "LD", nodeName + "!", nodeName.replaceAll("@", "").substring(0, 1))), nextUse));
             fixBrokenPRED_SUCC();
 
-            for (int i = spilledMachineLine.Next_OUT.nextuse.get(nodeName).get(0); i < CODE.size() -1; i++) {
+            // Pour toutes les reutilisations de node
+            for (int i = nextUse; i < CODE.size(); i++) {
+                CODE.get(i).appendExclamationToNodeInLine(nodeName);
+            }
 
-                if (CODE.get(i).Next_OUT.nextuse.keySet().contains(nodeName)) {
-                    ArrayList<Integer> values = (CODE.get(i).Next_OUT.nextuse.get(nodeName));
-                    values.sort(null);
-                    CODE.get(i).Next_OUT.nextuse.remove(nodeName);
-                    CODE.get(i).Next_OUT.nextuse.put(nodeName + "!", values);
-                }
+        } else {
+            for (int i = first; i < CODE.size() - 1; i++) {
 
-                if (CODE.get(i).Next_IN.nextuse.keySet().contains(nodeName)) {
-                    ArrayList<Integer> values = (CODE.get(i).Next_IN.nextuse.get(nodeName));
-                    values.sort(null);
-                    CODE.get(i).Next_IN.nextuse.remove(nodeName);
-                    CODE.get(i).Next_IN.nextuse.put(nodeName + "!", values);
-                }
-
-                if (CODE.get(i).line.get(0).equals("ST")) {
+                // Si la ligne i est un ST, on l'enleve
+                if (CODE.get(i).line.get(0).equals("ST") && CODE.get(i).line.get(2).equals(nodeName)) {
                     CODE.remove(i);
-                    fixBrokenPRED_SUCC();
-
-                    // If machLine at CODE[i] contains old node name
-                } else if (CODE.get(i).line.contains(nodeName)) {
-
-                    // rename @X -> @X! everywhere
-                    for (int j = 0; j < CODE.get(i).line.size(); j++) {
-                        if (CODE.get(i).line.get(j).equals(nodeName)) {
-                            CODE.get(i).line.set(j, nodeName + "!");
-                        }
-                    }
                 }
             }
         }
-        compute_machineCode();
+
+        fixBrokenPRED_SUCC();
     }
 
-    // Lets do garage code because provided code is FULL OF CODE SMELLS
+    // if (cadeau) -> {fixBrokenPRED_SUCC()}
     private void fixBrokenPRED_SUCC() {
         for (int i = 0; i < CODE.size(); i++) {
             if (i > 0) {
@@ -848,11 +824,9 @@ public class PrintMachineCodeVisitor implements ParserVisitor {
     }
 
     private List<String> set_ordered(Set<String> s) {
-        // function given to order a set in alphabetic order TODO: use it! or redo-it yourself
+        // function given to order a set in alphabetic order
         List<String> list = new ArrayList<>(s);
         Collections.sort(list);
         return list;
     }
-
-    // TODO: add any class you judge necessary, and explain them in the report. GOOD LUCK!
 }
